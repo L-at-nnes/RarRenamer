@@ -1,5 +1,6 @@
 # RAR Renamer - GUI Version
 # Dark mode WPF interface for renaming RAR files
+# Features: Filters, Logging with rollback, Custom suffixes
 
 Add-Type -AssemblyName PresentationFramework
 Add-Type -AssemblyName PresentationCore
@@ -30,11 +31,30 @@ if (-not $script:sevenZip) {
     exit 1
 }
 
+# Initialize log file path
+$script:logFilePath = Join-Path -Path $PSScriptRoot -ChildPath "RarRenamer_Log.json"
+
+# Load existing log if available
+if (Test-Path -Path $script:logFilePath) {
+    try {
+        $script:allLogs = @(Get-Content -Path $script:logFilePath -Raw | ConvertFrom-Json)
+        if (-not $script:allLogs) {
+            $script:allLogs = @()
+        }
+    }
+    catch {
+        $script:allLogs = @()
+    }
+}
+else {
+    $script:allLogs = @()
+}
+
 # XAML for dark mode GUI
 $xaml = @"
 <Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="RAR Renamer" Height="600" Width="900"
+        Title="RAR Renamer - Enhanced" Height="650" Width="1100"
         Background="#1E1E1E" WindowStartupLocation="CenterScreen">
     <Window.Resources>
         <Style TargetType="Button">
@@ -85,8 +105,6 @@ $xaml = @"
             <Setter Property="HeadersVisibility" Value="Column"/>
             <Setter Property="AutoGenerateColumns" Value="False"/>
             <Setter Property="CanUserAddRows" Value="False"/>
-            <Setter Property="IsReadOnly" Value="True"/>
-            <Setter Property="SelectionMode" Value="Extended"/>
         </Style>
         <Style TargetType="DataGridColumnHeader">
             <Setter Property="Background" Value="#2D2D30"/>
@@ -131,6 +149,7 @@ $xaml = @"
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto"/>
             <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
             <RowDefinition Height="*"/>
             <RowDefinition Height="Auto"/>
         </Grid.RowDefinitions>
@@ -138,19 +157,28 @@ $xaml = @"
         <!-- Folder selection -->
         <StackPanel Grid.Row="0" Orientation="Horizontal" Margin="0,0,0,15">
             <Label Content="Folder:" VerticalAlignment="Center" Margin="0,0,10,0"/>
-            <TextBox x:Name="txtFolder" Width="550" VerticalAlignment="Center" IsReadOnly="True"/>
+            <TextBox x:Name="txtFolder" Width="680" VerticalAlignment="Center" IsReadOnly="True"/>
             <Button x:Name="btnBrowse" Content="Browse" Margin="10,0,0,0" Width="100"/>
         </StackPanel>
         
-        <!-- Scan button -->
+        <!-- Prefix/Suffix configuration -->
         <StackPanel Grid.Row="1" Orientation="Horizontal" Margin="0,0,0,15">
+            <Label Content="Prefix:" VerticalAlignment="Center" Margin="0,0,10,0"/>
+            <TextBox x:Name="txtPrefix" Width="200" VerticalAlignment="Center" />
+            <Label Content="Suffix:" VerticalAlignment="Center" Margin="30,0,10,0"/>
+            <TextBox x:Name="txtSuffix" Width="200" VerticalAlignment="Center" />
+        </StackPanel>
+        
+        <!-- Scan button -->
+        <StackPanel Grid.Row="2" Orientation="Horizontal" Margin="0,0,0,15">
             <Button x:Name="btnScan" Content="Scan Archives" Width="150" IsEnabled="False"/>
             <Label x:Name="lblStatus" Content="" Margin="15,0,0,0" Foreground="#4EC9B0"/>
         </StackPanel>
         
         <!-- Results grid -->
-        <DataGrid Grid.Row="2" x:Name="dgResults" Margin="0,0,0,15">
+        <DataGrid Grid.Row="3" x:Name="dgResults" Margin="0,0,0,15">
             <DataGrid.Columns>
+                <DataGridCheckBoxColumn Header="Select" Binding="{Binding IsSelected, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" Width="60"/>
                 <DataGridTextColumn Header="Current Name" Binding="{Binding CurrentName}" Width="2*"/>
                 <DataGridTextColumn Header="New Name" Binding="{Binding NewName}" Width="2*"/>
                 <DataGridTextColumn Header="Status" Binding="{Binding Status}" Width="*"/>
@@ -158,8 +186,11 @@ $xaml = @"
         </DataGrid>
         
         <!-- Action buttons -->
-        <StackPanel Grid.Row="3" Orientation="Horizontal" HorizontalAlignment="Right">
-            <Button x:Name="btnRenameAll" Content="Rename All" Width="150" IsEnabled="False"/>
+        <StackPanel Grid.Row="4" Orientation="Horizontal" HorizontalAlignment="Right">
+            <Button x:Name="btnSelectAll" Content="Select All" Width="120" Margin="0,0,10,0"/>
+            <Button x:Name="btnDeselectAll" Content="Deselect All" Width="120" Margin="0,0,10,0"/>
+            <Button x:Name="btnRenameAll" Content="Rename Selected" Width="150" IsEnabled="False"/>
+            <Button x:Name="btnUndo" Content="Undo Last Operation" Width="180" Margin="10,0,0,0" Background="#D17000"/>
         </StackPanel>
     </Grid>
 </Window>
@@ -176,10 +207,37 @@ $btnScan = $window.FindName("btnScan")
 $lblStatus = $window.FindName("lblStatus")
 $dgResults = $window.FindName("dgResults")
 $btnRenameAll = $window.FindName("btnRenameAll")
+$btnUndo = $window.FindName("btnUndo")
+$btnSelectAll = $window.FindName("btnSelectAll")
+$btnDeselectAll = $window.FindName("btnDeselectAll")
+$txtPrefix = $window.FindName("txtPrefix")
+$txtSuffix = $window.FindName("txtSuffix")
 
 # Data collection
 $script:results = New-Object System.Collections.ObjectModel.ObservableCollection[Object]
 $dgResults.ItemsSource = $script:results
+
+# Function to save log
+function SaveLog {
+    param (
+        [array]$logEntries
+    )
+    
+    if ($logEntries.Count -eq 0) {
+        return
+    }
+    
+    # Add to all logs
+    $script:allLogs = @($script:allLogs) + @($logEntries)
+    
+    # Save to file
+    try {
+        $script:allLogs | ConvertTo-Json -Depth 10 | Set-Content -Path $script:logFilePath -Encoding UTF8
+    }
+    catch {
+        [System.Windows.MessageBox]::Show("Error saving log: $_", "Log Error", [System.Windows.MessageBoxButton]::OK, [System.Windows.MessageBoxImage]::Warning)
+    }
+}
 
 # Set default folder on load
 $scriptFolder = Split-Path -Parent $MyInvocation.MyCommand.Path
@@ -219,6 +277,8 @@ $btnScan.Add_Click({
     }
     
     $readyCount = 0
+    $prefix = $txtPrefix.Text.Trim()
+    $suffix = $txtSuffix.Text.Trim()
     
     foreach ($rarFile in $rarFiles) {
         $output = & $script:sevenZip l $rarFile.FullName
@@ -241,11 +301,20 @@ $btnScan.Add_Click({
                 Status = "No folder found"
                 FullPath = $rarFile.FullName
                 CanRename = $false
+                IsSelected = $false
             })
             continue
         }
         
-        $proposedName = "$firstFolder.rar"
+        # Build proposed name with optional prefix/suffix
+        $proposedName = $firstFolder
+        if ($prefix -ne "") {
+            $proposedName = "$prefix-$proposedName"
+        }
+        if ($suffix -ne "") {
+            $proposedName = "$proposedName-$suffix"
+        }
+        $proposedName = "$proposedName.rar"
         
         if ($rarFile.Name -eq $proposedName) {
             $script:results.Add([PSCustomObject]@{
@@ -254,6 +323,7 @@ $btnScan.Add_Click({
                 Status = "Already correct"
                 FullPath = $rarFile.FullName
                 CanRename = $false
+                IsSelected = $false
             })
             continue
         }
@@ -267,6 +337,7 @@ $btnScan.Add_Click({
                 Status = "Target exists"
                 FullPath = $rarFile.FullName
                 CanRename = $false
+                IsSelected = $false
             })
             continue
         }
@@ -277,6 +348,7 @@ $btnScan.Add_Click({
             Status = "Ready to rename"
             FullPath = $rarFile.FullName
             CanRename = $true
+            IsSelected = $true
         })
         $readyCount++
     }
@@ -286,47 +358,197 @@ $btnScan.Add_Click({
     
     if ($readyCount -gt 0) {
         $btnRenameAll.IsEnabled = $true
-        
-        # Auto-select ready items
-        $dgResults.SelectedItems.Clear()
-        foreach ($item in $script:results) {
-            if ($item.CanRename) {
-                $dgResults.SelectedItems.Add($item)
-            }
-        }
     }
 })
 
 # Rename All button click
 $btnRenameAll.Add_Click({
-    $itemsToRename = $dgResults.SelectedItems | Where-Object { $_.CanRename }
+    $itemsToRename = $script:results | Where-Object { $_.IsSelected -and $_.CanRename }
     
     if ($itemsToRename.Count -eq 0) {
         [System.Windows.MessageBox]::Show("No files selected for renaming", "Info", [System.Windows.MessageBoxButton]::OK, [System.Windows.MessageBoxImage]::Information)
         return
     }
     
+    $result = [System.Windows.MessageBox]::Show("Rename $($itemsToRename.Count) selected file(s)?", "Confirm", [System.Windows.MessageBoxButton]::YesNo, [System.Windows.MessageBoxImage]::Question)
+    
+    if ($result -ne [System.Windows.MessageBoxResult]::Yes) {
+        return
+    }
+    
     $renamed = 0
     $errors = 0
+    $sessionLog = @()
     
     foreach ($item in $itemsToRename) {
         try {
-            Rename-Item -Path $item.FullPath -NewName $item.NewName -ErrorAction Stop
+            $oldPath = $item.FullPath
+            $newPath = Join-Path -Path (Split-Path -Parent $oldPath) -ChildPath $item.NewName
+            
+            Rename-Item -Path $oldPath -NewName $item.NewName -ErrorAction Stop
+            
+            # Log the operation
+            $logEntry = @{
+                Timestamp = (Get-Date).ToString("yyyy-MM-dd HH:mm:ss")
+                OldPath = $oldPath
+                NewPath = $newPath
+                OldName = $item.CurrentName
+                NewName = $item.NewName
+                Success = $true
+            }
+            $sessionLog += $logEntry
+            
             $item.Status = "Renamed"
             $item.CurrentName = $item.NewName
+            $item.FullPath = $newPath
             $item.CanRename = $false
+            $item.IsSelected = $false
             $renamed++
         }
         catch {
+            $logEntry = @{
+                Timestamp = (Get-Date).ToString("yyyy-MM-dd HH:mm:ss")
+                OldPath = $item.FullPath
+                NewPath = ""
+                OldName = $item.CurrentName
+                NewName = $item.NewName
+                Success = $false
+                Error = $_.Exception.Message
+            }
+            $sessionLog += $logEntry
+            
             $item.Status = "Error: $_"
             $errors++
         }
     }
     
+    # Save log
+    SaveLog -logEntries $sessionLog
+    
+    # Refresh display
     $dgResults.Items.Refresh()
+    
     $lblStatus.Content = "Renamed: $renamed | Errors: $errors"
     $lblStatus.Foreground = if ($errors -eq 0) { "#4EC9B0" } else { "#F48771" }
-    $btnRenameAll.IsEnabled = $false
+    $btnRenameAll.IsEnabled = ($script:results | Where-Object { $_.CanRename }).Count -gt 0
+})
+
+# Select All button
+$btnSelectAll.Add_Click({
+    foreach ($item in $script:results) {
+        if ($item.CanRename) {
+            $item.IsSelected = $true
+        }
+    }
+    $dgResults.Items.Refresh()
+})
+
+# Deselect All button
+$btnDeselectAll.Add_Click({
+    foreach ($item in $script:results) {
+        $item.IsSelected = $false
+    }
+    $dgResults.Items.Refresh()
+})
+
+# Undo button click
+$btnUndo.Add_Click({
+    # Check if there are logs to undo
+    if ($script:allLogs.Count -eq 0) {
+        [System.Windows.MessageBox]::Show("No operations to undo", "Info", [System.Windows.MessageBoxButton]::OK, [System.Windows.MessageBoxImage]::Information)
+        return
+    }
+    
+    # Get only successful operations from the log
+    $successfulLogs = $script:allLogs | Where-Object { $_.Success -eq $true }
+    
+    if ($successfulLogs.Count -eq 0) {
+        [System.Windows.MessageBox]::Show("No successful operations to undo", "Info", [System.Windows.MessageBoxButton]::OK, [System.Windows.MessageBoxImage]::Information)
+        return
+    }
+    
+    $result = [System.Windows.MessageBox]::Show("Undo the last successful rename operation?", "Confirm Undo", [System.Windows.MessageBoxButton]::YesNo, [System.Windows.MessageBoxImage]::Question)
+    
+    if ($result -ne [System.Windows.MessageBoxResult]::Yes) {
+        return
+    }
+    
+    # Get the last successful operation
+    $lastOperation = $successfulLogs[-1]
+    
+    try {
+        if (Test-Path -Path $lastOperation.NewPath) {
+            Rename-Item -Path $lastOperation.NewPath -NewName $lastOperation.OldName -ErrorAction Stop
+            
+            # Remove this operation from the log
+            $script:allLogs = @($script:allLogs | Where-Object { 
+                -not ($_.OldPath -eq $lastOperation.OldPath -and $_.NewPath -eq $lastOperation.NewPath -and $_.Timestamp -eq $lastOperation.Timestamp)
+            })
+            
+            # Save updated log
+            try {
+                if ($script:allLogs.Count -gt 0) {
+                    $script:allLogs | ConvertTo-Json -Depth 10 | Set-Content -Path $script:logFilePath -Encoding UTF8
+                }
+                else {
+                    # Delete log file if empty
+                    if (Test-Path -Path $script:logFilePath) {
+                        Remove-Item -Path $script:logFilePath -Force
+                    }
+                }
+            }
+            catch {
+                # Log save error, but undo was successful
+            }
+            
+            # Update the item in the results if it exists
+            $item = $script:results | Where-Object { $_.FullPath -eq $lastOperation.NewPath }
+            if ($item) {
+                $item.CurrentName = $lastOperation.OldName
+                $item.FullPath = $lastOperation.OldPath
+                $item.Status = "Ready to rename"
+                $item.CanRename = $true
+                $item.IsSelected = $true
+                
+                # Recalculate the proposed new name with current prefix/suffix
+                $prefix = $txtPrefix.Text.Trim()
+                $suffix = $txtSuffix.Text.Trim()
+                
+                # Extract folder name from old name (remove .rar extension)
+                $folderName = [System.IO.Path]::GetFileNameWithoutExtension($lastOperation.OldName)
+                
+                # Rebuild proposed name
+                $proposedName = $folderName
+                if ($prefix -ne "") {
+                    $proposedName = "$prefix-$proposedName"
+                }
+                if ($suffix -ne "") {
+                    $proposedName = "$proposedName-$suffix"
+                }
+                $item.NewName = "$proposedName.rar"
+            }
+            
+            # Refresh display
+            $dgResults.Items.Refresh()
+            
+            # Re-enable rename button if there are files that can be renamed
+            $canRenameCount = ($script:results | Where-Object { $_.CanRename }).Count
+            if ($canRenameCount -gt 0) {
+                $btnRenameAll.IsEnabled = $true
+            }
+            
+            $lblStatus.Content = "Successfully undone 1 operation - $($script:allLogs.Count) operation(s) remaining in log"
+            $lblStatus.Foreground = "#4EC9B0"
+            
+            [System.Windows.MessageBox]::Show("Successfully undone the last rename operation", "Undo Complete", [System.Windows.MessageBoxButton]::OK, [System.Windows.MessageBoxImage]::Information)
+        }
+        else {
+            [System.Windows.MessageBox]::Show("File not found: $($lastOperation.NewPath)", "Error", [System.Windows.MessageBoxButton]::OK, [System.Windows.MessageBoxImage]::Error)
+        }
+    }
+    catch {
+        [System.Windows.MessageBox]::Show("Error undoing operation: $_", "Error", [System.Windows.MessageBoxButton]::OK, [System.Windows.MessageBoxImage]::Error)
+    }
 })
 
 # Add required assembly for folder browser
