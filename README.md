@@ -17,8 +17,10 @@ A PowerShell GUI tool to rename RAR archives based on their internal folder stru
   - New file path and name
   - Success/failure status
   - Error messages (if applicable)
-- **Undo Last Operation**: Rollback the most recent rename operation
-- **Undo All Operations**: Rollback ALL successful renames at once (bulk undo)
+- **Selective Undo**: Choose which operations to undo with checkboxes
+  - Click "Undo Last Operation" to open selection window
+  - Select specific operations or use "Select All"/"Deselect All"
+  - Click "Undo Selected" to revert chosen operations
 - **Persistent Log**: Works across application restarts
 
 ### ✅ Prefix & Suffix System
@@ -41,12 +43,23 @@ A PowerShell GUI tool to rename RAR archives based on their internal folder stru
 
 - **Windows 7** or later (tested on Windows 7 & 10)
 - **PowerShell 3.0+** (built-in on Windows 7+)
+- **.NET Framework 4.0+** (for WPF DataGrid support)
+  - Windows 10/11: Already installed
+  - Windows 7: Will be automatically installed if missing (via included script)
 - **7-Zip** installed ([Download](https://www.7-zip.org/))
 
 ## Compatibility Notes
 
 ### Windows 7
+
 - Fully compatible with Windows 7 SP1
+- **Automatic .NET Framework installation helper**:
+  - If .NET Framework 4.0+ is not detected, the script will offer to help you install it
+  - Opens your browser to the official Microsoft download page
+  - Provides step-by-step installation instructions
+  - Requires a system reboot after installation
+  - **Why manual download?**: Windows 7's PowerShell 2.0 has TLS/HTTPS compatibility issues with modern download servers. Using your browser ensures a reliable download.
+  - Alternatively, run `Install-NetFramework.ps1` manually for guided installation
 - PowerShell 3.0+ recommended (update via Windows Management Framework)
 - If you encounter errors, ensure PowerShell execution policy allows scripts:
   ```powershell
@@ -54,6 +67,7 @@ A PowerShell GUI tool to rename RAR archives based on their internal folder stru
   ```
 
 ### Windows 10/11
+
 - No additional configuration needed
 - Runs out-of-the-box
 
@@ -61,20 +75,21 @@ A PowerShell GUI tool to rename RAR archives based on their internal folder stru
 
 1. **Launch the script**: Run `RarRenamerGUI.ps1`
 2. **Select folder**: Click "Browse" or use the default (script location)
+3. **Scan archives**: Click "Scan Archives"
 4. **Configure prefix/suffix** (optional):
-   - Enter prefix in the first text box (e.g., "P" or "MyApp ")
-   - Enter suffix in the second text box (e.g., "v2" or " Portable")
-   - Spaces are preserved: " Portable" will add a space before the word
-5. **Scan archives**: Click "Scan Archives"
-6. **Select files**: 
+   - Enter prefix in the first text box (e.g., "P-" or "MyApp ")
+   - Enter suffix in the second text box (e.g., "-v2" or " Portable")
+   - Text is concatenated exactly as typed - add your own dashes/spaces
+   - Click **"Preview"** to recalculate all proposed names
+5. **Select files**: 
    - Use checkboxes to select/deselect individual files
    - Use "Select All" or "Deselect All" buttons
-7. **Rename**: Click "Rename Selected"
-8. **Undo if needed**: 
-   - Click "Undo Last Operation" to choose between:
-     - **YES**: Undo ALL recent operations
-     - **NO**: Undo only the last one
-     - **CANCEL**: Abort
+6. **Rename**: Click "Rename Selected"
+7. **Undo if needed**: 
+   - Click "Undo Last Operation" to open the undo window
+   - Check/uncheck specific operations you want to undo
+   - Use "Select All" or "Deselect All" for bulk selection
+   - Click "Undo Selected" to revert chosen operations
 
 ## How It Works
 
@@ -136,8 +151,8 @@ The `RarRenamer_Log.json` file stores all operations:
   - Example: `-Portable` → `FolderName-Portable.rar`
   - Example: ` Portable` (with space) → `FolderName Portable.rar`
   - Example: `P-` → `P-FolderName.rar`
-- **Apply Button**: After changing prefix/suffix, click "Apply" to see updated names without scanning again
-- **Bulk Undo**: Use "Undo All" option to revert multiple renames at once (useful after testing)
+- **Preview Button**: After changing prefix/suffix, click "Preview" to see updated names without scanning again
+- **Selective Undo**: Open undo window to choose exactly which operations to revert
 - **Persistent Log**: The log file is saved and works across restarts - you can undo even after closing the program
 - The log file grows over time - you can delete it periodically
 - You can rescan with different prefixes/suffixes to preview different naming schemes
@@ -146,6 +161,20 @@ The `RarRenamer_Log.json` file stores all operations:
 ## Troubleshooting
 
 ### Windows 7 Issues
+
+**Error: "Type reference cannot find public type named 'DataGrid'"**
+- .NET Framework 4.0+ is required for WPF DataGrid control
+- The script will automatically offer to help you install .NET Framework 4.5.2
+- Click "Yes" when prompted, then:
+  1. Your browser will open to the Microsoft download page
+  2. Click "Download" and save the file (NDP452-KB2901907-x86-x64-AllOS-ENU.exe)
+  3. Run the downloaded installer
+  4. Follow the installation wizard
+  5. **Reboot your computer** when prompted
+  6. Run RarRenamerGUI.ps1 again
+- Or run `Install-NetFramework.ps1` manually for the same guided process
+- Or install manually: [.NET Framework 4.5.2](https://www.microsoft.com/en-us/download/details.aspx?id=42643)
+
 **Error: "Join-Path : Cannot bind argument to parameter 'Path'"**
 - Update PowerShell to version 3.0 or later
 - Download: [Windows Management Framework 3.0](https://www.microsoft.com/en-us/download/details.aspx?id=34595)

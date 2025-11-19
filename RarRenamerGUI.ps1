@@ -2,6 +2,30 @@
 # Dark mode WPF interface for renaming RAR files
 # Features: Filters, Logging with rollback, Custom suffixes
 
+# Check .NET Framework version (need 4.0+ for DataGrid)
+try {
+    $netVersion = [System.Diagnostics.FileVersionInfo]::GetVersionInfo([System.Runtime.InteropServices.RuntimeEnvironment]::GetRuntimeDirectory() + "mscorlib.dll").ProductVersion
+    if ($netVersion -lt "4.0") {
+        Add-Type -AssemblyName System.Windows.Forms
+        $result = [System.Windows.Forms.MessageBox]::Show(".NET Framework 4.0 or later is required.`n`nCurrent version: $netVersion`n`nDo you want to install .NET Framework 4.5 automatically?`n`n(This will download ~50MB and require a reboot)", "Install .NET Framework 4.5?", [System.Windows.Forms.MessageBoxButtons]::YesNo, [System.Windows.Forms.MessageBoxIcon]::Question)
+        
+        if ($result -eq [System.Windows.Forms.DialogResult]::Yes) {
+            # Launch the installer script
+            $installerScript = Join-Path -Path (Split-Path -Parent $MyInvocation.MyCommand.Path) -ChildPath "Install-NetFramework.ps1"
+            if (Test-Path $installerScript) {
+                Start-Process powershell.exe -ArgumentList "-ExecutionPolicy Bypass -File `"$installerScript`"" -Verb RunAs
+            }
+            else {
+                [System.Windows.Forms.MessageBox]::Show("Installer script not found: Install-NetFramework.ps1`n`nPlease download .NET Framework 4.5 manually from:`nhttps://www.microsoft.com/en-us/download/details.aspx?id=42643", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
+            }
+        }
+        exit 1
+    }
+}
+catch {
+    # If we can't check, try to continue anyway lol
+}
+
 Add-Type -AssemblyName PresentationFramework
 Add-Type -AssemblyName PresentationCore
 Add-Type -AssemblyName WindowsBase
@@ -173,7 +197,7 @@ $xaml = @"
             <TextBox x:Name="txtPrefix" Width="200" VerticalAlignment="Center" />
             <Label Content="Suffix:" VerticalAlignment="Center" Margin="30,0,10,0"/>
             <TextBox x:Name="txtSuffix" Width="200" VerticalAlignment="Center" />
-            <Button x:Name="btnApplyPrefixSuffix" Content="Apply" Width="100" Margin="30,0,0,0" IsEnabled="False"/>
+            <Button x:Name="btnApplyPrefixSuffix" Content="Preview" Width="100" Margin="30,0,0,0" IsEnabled="False"/>
         </StackPanel>
         
         <!-- Scan button -->
@@ -487,9 +511,6 @@ $btnApplyPrefixSuffix.Add_Click({
             continue
         }
         
-        # Extract folder name from current name (remove .rar extension and any existing prefix/suffix)
-        $currentNameWithoutExt = [System.IO.Path]::GetFileNameWithoutExtension($item.CurrentName)
-        
         # Try to extract the original folder name by checking the archive
         $output = & $script:sevenZip l $item.FullPath
         $firstFolder = $null
@@ -573,113 +594,280 @@ $btnUndo.Add_Click({
         return
     }
     
-    # Ask if user wants to undo all or just the last one
-    $undoAllResult = [System.Windows.MessageBox]::Show("Undo ALL recent operations ($($successfulLogs.Count) file(s))?`n`nClick YES to undo all, NO to undo only the last one, CANCEL to abort.", "Undo Options", [System.Windows.MessageBoxButton]::YesNoCancel, [System.Windows.MessageBoxImage]::Question)
+    # Create undo selection window
+    $undoXaml = @"
+<Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Select Operations to Undo" Height="500" Width="800"
+        Background="#1E1E1E" WindowStartupLocation="CenterScreen">
+    <Window.Resources>
+        <Style TargetType="Button">
+            <Setter Property="Background" Value="#007ACC"/>
+            <Setter Property="Foreground" Value="#F1F1F1"/>
+            <Setter Property="BorderThickness" Value="0"/>
+            <Setter Property="Padding" Value="15,8"/>
+            <Setter Property="FontSize" Value="14"/>
+            <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border Background="{TemplateBinding Background}" 
+                                BorderThickness="0" 
+                                CornerRadius="3"
+                                Padding="{TemplateBinding Padding}">
+                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                        </Border>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+            <Style.Triggers>
+                <Trigger Property="IsMouseOver" Value="True">
+                    <Setter Property="Background" Value="#1C97EA"/>
+                </Trigger>
+                <Trigger Property="IsEnabled" Value="False">
+                    <Setter Property="Background" Value="#3E3E42"/>
+                    <Setter Property="Foreground" Value="#656565"/>
+                </Trigger>
+            </Style.Triggers>
+        </Style>
+        <Style TargetType="DataGrid">
+            <Setter Property="Background" Value="#1E1E1E"/>
+            <Setter Property="Foreground" Value="#F1F1F1"/>
+            <Setter Property="BorderBrush" Value="#3F3F46"/>
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="RowBackground" Value="#1E1E1E"/>
+            <Setter Property="AlternatingRowBackground" Value="#1E1E1E"/>
+            <Setter Property="GridLinesVisibility" Value="None"/>
+            <Setter Property="HeadersVisibility" Value="Column"/>
+            <Setter Property="AutoGenerateColumns" Value="False"/>
+            <Setter Property="CanUserAddRows" Value="False"/>
+        </Style>
+        <Style TargetType="DataGridColumnHeader">
+            <Setter Property="Background" Value="#2D2D30"/>
+            <Setter Property="Foreground" Value="#F1F1F1"/>
+            <Setter Property="BorderBrush" Value="#3F3F46"/>
+            <Setter Property="BorderThickness" Value="0,0,1,1"/>
+            <Setter Property="Padding" Value="10,8"/>
+            <Setter Property="FontWeight" Value="SemiBold"/>
+            <Setter Property="FontSize" Value="13"/>
+        </Style>
+        <Style TargetType="DataGridRow">
+            <Setter Property="Background" Value="#1E1E1E"/>
+            <Style.Triggers>
+                <Trigger Property="IsMouseOver" Value="True">
+                    <Setter Property="Background" Value="#2A2D2E"/>
+                </Trigger>
+                <Trigger Property="IsSelected" Value="True">
+                    <Setter Property="Background" Value="#094771"/>
+                </Trigger>
+            </Style.Triggers>
+        </Style>
+        <Style TargetType="DataGridCell">
+            <Setter Property="BorderThickness" Value="0"/>
+            <Setter Property="Padding" Value="10,6"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="DataGridCell">
+                        <Border Padding="{TemplateBinding Padding}" Background="{TemplateBinding Background}">
+                            <ContentPresenter VerticalAlignment="Center"/>
+                        </Border>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+        <Style TargetType="Label">
+            <Setter Property="Foreground" Value="#F1F1F1"/>
+            <Setter Property="FontSize" Value="13"/>
+        </Style>
+    </Window.Resources>
     
-    if ($undoAllResult -eq [System.Windows.MessageBoxResult]::Cancel) {
-        return
+    <Grid Margin="20">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+        
+        <Label Grid.Row="0" Content="Select operations to undo (most recent first):" Margin="0,0,0,10"/>
+        
+        <DataGrid Grid.Row="1" x:Name="dgUndoOps" Margin="0,0,0,15">
+            <DataGrid.Columns>
+                <DataGridCheckBoxColumn Header="Select" Binding="{Binding IsSelected}" Width="60"/>
+                <DataGridTextColumn Header="Timestamp" Binding="{Binding Timestamp}" Width="150" IsReadOnly="True"/>
+                <DataGridTextColumn Header="Old Name" Binding="{Binding OldName}" Width="*" IsReadOnly="True"/>
+                <DataGridTextColumn Header="New Name" Binding="{Binding NewName}" Width="*" IsReadOnly="True"/>
+            </DataGrid.Columns>
+        </DataGrid>
+        
+        <StackPanel Grid.Row="2" Orientation="Horizontal" HorizontalAlignment="Right">
+            <Button x:Name="btnUndoSelectAll" Content="Select All" Width="120" Margin="0,0,10,0"/>
+            <Button x:Name="btnUndoDeselectAll" Content="Deselect All" Width="120" Margin="0,0,10,0"/>
+            <Button x:Name="btnUndoSelected" Content="Undo Selected" Width="150" Margin="0,0,10,0"/>
+            <Button x:Name="btnUndoCancel" Content="Cancel" Width="100" Background="#6E6E6E"/>
+        </StackPanel>
+    </Grid>
+</Window>
+"@
+    
+    # Load undo window
+    $undoStringReader = New-Object System.IO.StringReader($undoXaml)
+    $undoReader = [System.Xml.XmlReader]::Create($undoStringReader)
+    $undoWindow = [System.Windows.Markup.XamlReader]::Load($undoReader)
+    $undoReader.Close()
+    $undoStringReader.Close()
+    
+    # Get controls
+    $dgUndoOps = $undoWindow.FindName("dgUndoOps")
+    $btnUndoSelectAll = $undoWindow.FindName("btnUndoSelectAll")
+    $btnUndoDeselectAll = $undoWindow.FindName("btnUndoDeselectAll")
+    $btnUndoSelected = $undoWindow.FindName("btnUndoSelected")
+    $btnUndoCancel = $undoWindow.FindName("btnUndoCancel")
+    
+    # Populate grid with operations (most recent first)
+    $undoCollection = New-Object System.Collections.ObjectModel.ObservableCollection[Object]
+    foreach ($log in ($successfulLogs | Sort-Object -Property Timestamp -Descending)) {
+        $undoCollection.Add([PSCustomObject]@{
+            Timestamp = $log.Timestamp
+            OldName = $log.OldName
+            NewName = $log.NewName
+            OldPath = $log.OldPath
+            NewPath = $log.NewPath
+            IsSelected = $true
+        })
     }
+    $dgUndoOps.ItemsSource = $undoCollection
     
-    $undoAll = ($undoAllResult -eq [System.Windows.MessageBoxResult]::Yes)
+    # Select All button
+    $btnUndoSelectAll.Add_Click({
+        foreach ($item in $undoCollection) {
+            $item.IsSelected = $true
+        }
+        $dgUndoOps.Items.Refresh()
+    })
     
-    $undoneCount = 0
-    $undoErrors = 0
-    $operationsToUndo = @()
+    # Deselect All button
+    $btnUndoDeselectAll.Add_Click({
+        foreach ($item in $undoCollection) {
+            $item.IsSelected = $false
+        }
+        $dgUndoOps.Items.Refresh()
+    })
     
-    if ($undoAll) {
-        # Undo all operations in reverse order
-        $operationsToUndo = @($successfulLogs | Sort-Object -Property Timestamp -Descending)
-    }
-    else {
-        # Undo only the last operation
-        $operationsToUndo = @($successfulLogs[-1])
-    }
+    # Cancel button
+    $btnUndoCancel.Add_Click({
+        $undoWindow.Close()
+    })
     
-    foreach ($lastOperation in $operationsToUndo) {
-        try {
-            if (Test-Path -Path $lastOperation.NewPath) {
-                Rename-Item -Path $lastOperation.NewPath -NewName $lastOperation.OldName -ErrorAction Stop
-                
-                # Remove this operation from the log
-                $script:allLogs = @($script:allLogs | Where-Object { 
-                    -not ($_.OldPath -eq $lastOperation.OldPath -and $_.NewPath -eq $lastOperation.NewPath -and $_.Timestamp -eq $lastOperation.Timestamp)
-                })
-                
-                # Update the item in the results if it exists
-                $item = $script:results | Where-Object { $_.FullPath -eq $lastOperation.NewPath }
-                if ($item) {
-                    $item.CurrentName = $lastOperation.OldName
-                    $item.FullPath = $lastOperation.OldPath
-                    $item.Status = "Ready to rename"
-                    $item.CanRename = $true
-                    $item.IsSelected = $true
+    # Undo Selected button
+    $btnUndoSelected.Add_Click({
+        $selectedOps = $undoCollection | Where-Object { $_.IsSelected }
+        
+        if ($selectedOps.Count -eq 0) {
+            [System.Windows.MessageBox]::Show("No operations selected", "Info", [System.Windows.MessageBoxButton]::OK, [System.Windows.MessageBoxImage]::Information)
+            return
+        }
+        
+        $result = [System.Windows.MessageBox]::Show("Undo $($selectedOps.Count) selected operation(s)?", "Confirm Undo", [System.Windows.MessageBoxButton]::YesNo, [System.Windows.MessageBoxImage]::Question)
+        
+        if ($result -ne [System.Windows.MessageBoxResult]::Yes) {
+            return
+        }
+        
+        $undoneCount = 0
+        $undoErrors = 0
+        
+        foreach ($op in $selectedOps) {
+            try {
+                if (Test-Path -Path $op.NewPath) {
+                    Rename-Item -Path $op.NewPath -NewName $op.OldName -ErrorAction Stop
                     
-                    # Recalculate the proposed new name with current prefix/suffix
-                    $prefix = if ($txtPrefix.Text) { $txtPrefix.Text } else { "" }
-                    $suffix = if ($txtSuffix.Text) { $txtSuffix.Text } else { "" }
+                    # Remove this operation from the log
+                    $script:allLogs = @($script:allLogs | Where-Object { 
+                        -not ($_.OldPath -eq $op.OldPath -and $_.NewPath -eq $op.NewPath -and $_.Timestamp -eq $op.Timestamp)
+                    })
                     
-                    # Extract folder name from old name (remove .rar extension)
-                    $folderName = [System.IO.Path]::GetFileNameWithoutExtension($lastOperation.OldName)
-                    
-                    # Rebuild proposed name (no automatic dash/space)
-                    $proposedName = $folderName
-                    if ($prefix -ne "") {
-                        $proposedName = "$prefix$proposedName"
+                    # Update the item in the results if it exists
+                    $item = $script:results | Where-Object { $_.FullPath -eq $op.NewPath }
+                    if ($item) {
+                        $item.CurrentName = $op.OldName
+                        $item.FullPath = $op.OldPath
+                        $item.Status = "Ready to rename"
+                        $item.CanRename = $true
+                        $item.IsSelected = $true
+                        
+                        # Recalculate the proposed new name with current prefix/suffix
+                        $prefix = if ($txtPrefix.Text) { $txtPrefix.Text } else { "" }
+                        $suffix = if ($txtSuffix.Text) { $txtSuffix.Text } else { "" }
+                        
+                        # Extract folder name from old name (remove .rar extension)
+                        $folderName = [System.IO.Path]::GetFileNameWithoutExtension($op.OldName)
+                        
+                        # Rebuild proposed name (no automatic dash/space)
+                        $proposedName = $folderName
+                        if ($prefix -ne "") {
+                            $proposedName = "$prefix$proposedName"
+                        }
+                        if ($suffix -ne "") {
+                            $proposedName = "$proposedName$suffix"
+                        }
+                        $item.NewName = "$proposedName.rar"
                     }
-                    if ($suffix -ne "") {
-                        $proposedName = "$proposedName$suffix"
-                    }
-                    $item.NewName = "$proposedName.rar"
+                    
+                    $undoneCount++
                 }
-                
-                $undoneCount++
+                else {
+                    $undoErrors++
+                }
             }
-            else {
+            catch {
                 $undoErrors++
             }
         }
-        catch {
-            $undoErrors++
-        }
-    }
-    
-    # Save updated log
-    try {
-        if ($script:allLogs.Count -gt 0) {
-            $script:allLogs | ConvertTo-Json -Depth 10 | Set-Content -Path $script:logFilePath -Encoding UTF8
-        }
-        else {
-            # Delete log file if empty
-            if (Test-Path -Path $script:logFilePath) {
-                Remove-Item -Path $script:logFilePath -Force
+        
+        # Save updated log
+        try {
+            if ($script:allLogs.Count -gt 0) {
+                $script:allLogs | ConvertTo-Json -Depth 10 | Set-Content -Path $script:logFilePath -Encoding UTF8
+            }
+            else {
+                # Delete log file if empty
+                if (Test-Path -Path $script:logFilePath) {
+                    Remove-Item -Path $script:logFilePath -Force
+                }
             }
         }
-    }
-    catch {
-        # Log save error, but undo was successful
-    }
-    
-    # Refresh display
-    $dgResults.Items.Refresh()
-    
-    # Re-enable rename button if there are files that can be renamed
-    $canRenameCount = ($script:results | Where-Object { $_.CanRename }).Count
-    if ($canRenameCount -gt 0) {
-        $btnRenameAll.IsEnabled = $true
-    }
-    
-    # Show results
-    if ($undoneCount -gt 0) {
-        $lblStatus.Content = "Undone: $undoneCount | Errors: $undoErrors | Remaining in log: $($script:allLogs.Count)"
-        $lblStatus.Foreground = if ($undoErrors -eq 0) { "#4EC9B0" } else { "#F48771" }
+        catch {
+            # Log save error, but undo was successful
+        }
         
-        [System.Windows.MessageBox]::Show("Successfully undone $undoneCount operation(s)", "Undo Complete", [System.Windows.MessageBoxButton]::OK, [System.Windows.MessageBoxImage]::Information)
-    }
-    else {
-        $lblStatus.Content = "Undo failed - no files were restored"
-        $lblStatus.Foreground = "#F48771"
-        [System.Windows.MessageBox]::Show("No files were restored. Files may have been moved or renamed manually.", "Undo Failed", [System.Windows.MessageBoxButton]::OK, [System.Windows.MessageBoxImage]::Warning)
-    }
+        # Refresh main display
+        $dgResults.Items.Refresh()
+        
+        # Re-enable rename button if there are files that can be renamed
+        $canRenameCount = ($script:results | Where-Object { $_.CanRename }).Count
+        if ($canRenameCount -gt 0) {
+            $btnRenameAll.IsEnabled = $true
+        }
+        
+        # Show results
+        if ($undoneCount -gt 0) {
+            $lblStatus.Content = "Undone: $undoneCount | Errors: $undoErrors | Remaining in log: $($script:allLogs.Count)"
+            $lblStatus.Foreground = if ($undoErrors -eq 0) { "#4EC9B0" } else { "#F48771" }
+            
+            [System.Windows.MessageBox]::Show("Successfully undone $undoneCount operation(s)", "Undo Complete", [System.Windows.MessageBoxButton]::OK, [System.Windows.MessageBoxImage]::Information)
+        }
+        else {
+            $lblStatus.Content = "Undo failed - no files were restored"
+            $lblStatus.Foreground = "#F48771"
+            [System.Windows.MessageBox]::Show("No files were restored. Files may have been moved or renamed manually.", "Undo Failed", [System.Windows.MessageBoxButton]::OK, [System.Windows.MessageBoxImage]::Warning)
+        }
+        
+        # Close undo window
+        $undoWindow.Close()
+    })
+    
+    # Show undo window
+    $undoWindow.ShowDialog() | Out-Null
 })
 
 # Add required assembly for folder browser
