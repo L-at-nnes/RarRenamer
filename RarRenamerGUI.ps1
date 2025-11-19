@@ -31,8 +31,14 @@ if (-not $script:sevenZip) {
     exit 1
 }
 
-# Initialize log file path
-$script:logFilePath = Join-Path -Path $PSScriptRoot -ChildPath "RarRenamer_Log.json"
+# Initialize log file path (Windows 7 compatible)
+if ($PSScriptRoot) {
+    $script:logFilePath = Join-Path -Path $PSScriptRoot -ChildPath "RarRenamer_Log.json"
+}
+else {
+    # Fallback for Windows 7 / PowerShell 2.0
+    $script:logFilePath = Join-Path -Path (Split-Path -Parent $MyInvocation.MyCommand.Path) -ChildPath "RarRenamer_Log.json"
+}
 
 # Load existing log if available
 if (Test-Path -Path $script:logFilePath) {
@@ -167,6 +173,7 @@ $xaml = @"
             <TextBox x:Name="txtPrefix" Width="200" VerticalAlignment="Center" />
             <Label Content="Suffix:" VerticalAlignment="Center" Margin="30,0,10,0"/>
             <TextBox x:Name="txtSuffix" Width="200" VerticalAlignment="Center" />
+            <Button x:Name="btnApplyPrefixSuffix" Content="Apply" Width="100" Margin="30,0,0,0" IsEnabled="False"/>
         </StackPanel>
         
         <!-- Scan button -->
@@ -196,9 +203,12 @@ $xaml = @"
 </Window>
 "@
 
-# Load XAML
-$reader = [System.Xml.XmlReader]::Create([System.IO.StringReader]::new($xaml))
+# Load XAML (Windows 7 compatible)
+$stringReader = New-Object System.IO.StringReader($xaml)
+$reader = [System.Xml.XmlReader]::Create($stringReader)
 $window = [System.Windows.Markup.XamlReader]::Load($reader)
+$reader.Close()
+$stringReader.Close()
 
 # Get controls
 $txtFolder = $window.FindName("txtFolder")
@@ -212,6 +222,7 @@ $btnSelectAll = $window.FindName("btnSelectAll")
 $btnDeselectAll = $window.FindName("btnDeselectAll")
 $txtPrefix = $window.FindName("txtPrefix")
 $txtSuffix = $window.FindName("txtSuffix")
+$btnApplyPrefixSuffix = $window.FindName("btnApplyPrefixSuffix")
 
 # Data collection
 $script:results = New-Object System.Collections.ObjectModel.ObservableCollection[Object]
@@ -240,7 +251,13 @@ function SaveLog {
 }
 
 # Set default folder on load
-$scriptFolder = Split-Path -Parent $MyInvocation.MyCommand.Path
+if ($PSScriptRoot) {
+    $scriptFolder = $PSScriptRoot
+}
+else {
+    # Fallback for Windows 7 / PowerShell 2.0
+    $scriptFolder = Split-Path -Parent $MyInvocation.MyCommand.Path
+}
 $txtFolder.Text = $scriptFolder
 $btnScan.IsEnabled = $true
 
@@ -277,8 +294,9 @@ $btnScan.Add_Click({
     }
     
     $readyCount = 0
-    $prefix = $txtPrefix.Text.Trim()
-    $suffix = $txtSuffix.Text.Trim()
+    # Get prefix/suffix and preserve ALL spaces (including leading/trailing)
+    $prefix = if ($txtPrefix.Text) { $txtPrefix.Text } else { "" }
+    $suffix = if ($txtSuffix.Text) { $txtSuffix.Text } else { "" }
     
     foreach ($rarFile in $rarFiles) {
         $output = & $script:sevenZip l $rarFile.FullName
@@ -306,13 +324,13 @@ $btnScan.Add_Click({
             continue
         }
         
-        # Build proposed name with optional prefix/suffix
+        # Build proposed name with optional prefix/suffix (no automatic dash/space)
         $proposedName = $firstFolder
         if ($prefix -ne "") {
-            $proposedName = "$prefix-$proposedName"
+            $proposedName = "$prefix$proposedName"
         }
         if ($suffix -ne "") {
-            $proposedName = "$proposedName-$suffix"
+            $proposedName = "$proposedName$suffix"
         }
         $proposedName = "$proposedName.rar"
         
@@ -358,6 +376,7 @@ $btnScan.Add_Click({
     
     if ($readyCount -gt 0) {
         $btnRenameAll.IsEnabled = $true
+        $btnApplyPrefixSuffix.IsEnabled = $true
     }
 })
 
@@ -451,6 +470,93 @@ $btnDeselectAll.Add_Click({
     $dgResults.Items.Refresh()
 })
 
+# Apply Prefix/Suffix button click
+$btnApplyPrefixSuffix.Add_Click({
+    if ($script:results.Count -eq 0) {
+        [System.Windows.MessageBox]::Show("No files scanned. Please scan archives first.", "Info", [System.Windows.MessageBoxButton]::OK, [System.Windows.MessageBoxImage]::Information)
+        return
+    }
+    
+    # Get prefix/suffix and preserve ALL spaces (including leading/trailing)
+    $prefix = if ($txtPrefix.Text) { $txtPrefix.Text } else { "" }
+    $suffix = if ($txtSuffix.Text) { $txtSuffix.Text } else { "" }
+    
+    # Recalculate all proposed names
+    foreach ($item in $script:results) {
+        if ($item.Status -eq "No folder found") {
+            continue
+        }
+        
+        # Extract folder name from current name (remove .rar extension and any existing prefix/suffix)
+        $currentNameWithoutExt = [System.IO.Path]::GetFileNameWithoutExtension($item.CurrentName)
+        
+        # Try to extract the original folder name by checking the archive
+        $output = & $script:sevenZip l $item.FullPath
+        $firstFolder = $null
+        foreach ($line in $output) {
+            if ($line -match '^\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}\s+D....\s+\d+\s+\d+\s+(.+)') {
+                $filePath = $matches[1].Trim()
+                if (-not $filePath.Contains('\') -and -not $filePath.Contains('/')) {
+                    $firstFolder = $filePath
+                    break
+                }
+            }
+        }
+        
+        if (-not $firstFolder) {
+            continue
+        }
+        
+        # Build new proposed name (no automatic dash/space)
+        $proposedName = $firstFolder
+        if ($prefix -ne "") {
+            $proposedName = "$prefix$proposedName"
+        }
+        if ($suffix -ne "") {
+            $proposedName = "$proposedName$suffix"
+        }
+        $proposedName = "$proposedName.rar"
+        
+        # Update the item
+        if ($item.CurrentName -eq $proposedName) {
+            $item.NewName = $proposedName
+            $item.Status = "Already correct"
+            $item.CanRename = $false
+            $item.IsSelected = $false
+        }
+        else {
+            $targetPath = Join-Path -Path (Split-Path -Parent $item.FullPath) -ChildPath $proposedName
+            if (Test-Path -Path $targetPath) {
+                $item.NewName = $proposedName
+                $item.Status = "Target exists"
+                $item.CanRename = $false
+                $item.IsSelected = $false
+            }
+            else {
+                $item.NewName = $proposedName
+                $item.Status = "Ready to rename"
+                $item.CanRename = $true
+                $item.IsSelected = $true
+            }
+        }
+    }
+    
+    # Refresh the grid
+    $dgResults.Items.Refresh()
+    
+    # Update status and button state
+    $readyCount = ($script:results | Where-Object { $_.CanRename }).Count
+    $lblStatus.Content = "Prefix/Suffix applied - $readyCount file(s) ready to rename"
+    $lblStatus.Foreground = "#4EC9B0"
+    
+    if ($readyCount -gt 0) {
+        $btnRenameAll.IsEnabled = $true
+    }
+    else {
+        $btnRenameAll.IsEnabled = $false
+    }
+})
+
 # Undo button click
 $btnUndo.Add_Click({
     # Check if there are logs to undo
@@ -467,87 +573,112 @@ $btnUndo.Add_Click({
         return
     }
     
-    $result = [System.Windows.MessageBox]::Show("Undo the last successful rename operation?", "Confirm Undo", [System.Windows.MessageBoxButton]::YesNo, [System.Windows.MessageBoxImage]::Question)
+    # Ask if user wants to undo all or just the last one
+    $undoAllResult = [System.Windows.MessageBox]::Show("Undo ALL recent operations ($($successfulLogs.Count) file(s))?`n`nClick YES to undo all, NO to undo only the last one, CANCEL to abort.", "Undo Options", [System.Windows.MessageBoxButton]::YesNoCancel, [System.Windows.MessageBoxImage]::Question)
     
-    if ($result -ne [System.Windows.MessageBoxResult]::Yes) {
+    if ($undoAllResult -eq [System.Windows.MessageBoxResult]::Cancel) {
         return
     }
     
-    # Get the last successful operation
-    $lastOperation = $successfulLogs[-1]
+    $undoAll = ($undoAllResult -eq [System.Windows.MessageBoxResult]::Yes)
     
-    try {
-        if (Test-Path -Path $lastOperation.NewPath) {
-            Rename-Item -Path $lastOperation.NewPath -NewName $lastOperation.OldName -ErrorAction Stop
-            
-            # Remove this operation from the log
-            $script:allLogs = @($script:allLogs | Where-Object { 
-                -not ($_.OldPath -eq $lastOperation.OldPath -and $_.NewPath -eq $lastOperation.NewPath -and $_.Timestamp -eq $lastOperation.Timestamp)
-            })
-            
-            # Save updated log
-            try {
-                if ($script:allLogs.Count -gt 0) {
-                    $script:allLogs | ConvertTo-Json -Depth 10 | Set-Content -Path $script:logFilePath -Encoding UTF8
-                }
-                else {
-                    # Delete log file if empty
-                    if (Test-Path -Path $script:logFilePath) {
-                        Remove-Item -Path $script:logFilePath -Force
+    $undoneCount = 0
+    $undoErrors = 0
+    $operationsToUndo = @()
+    
+    if ($undoAll) {
+        # Undo all operations in reverse order
+        $operationsToUndo = @($successfulLogs | Sort-Object -Property Timestamp -Descending)
+    }
+    else {
+        # Undo only the last operation
+        $operationsToUndo = @($successfulLogs[-1])
+    }
+    
+    foreach ($lastOperation in $operationsToUndo) {
+        try {
+            if (Test-Path -Path $lastOperation.NewPath) {
+                Rename-Item -Path $lastOperation.NewPath -NewName $lastOperation.OldName -ErrorAction Stop
+                
+                # Remove this operation from the log
+                $script:allLogs = @($script:allLogs | Where-Object { 
+                    -not ($_.OldPath -eq $lastOperation.OldPath -and $_.NewPath -eq $lastOperation.NewPath -and $_.Timestamp -eq $lastOperation.Timestamp)
+                })
+                
+                # Update the item in the results if it exists
+                $item = $script:results | Where-Object { $_.FullPath -eq $lastOperation.NewPath }
+                if ($item) {
+                    $item.CurrentName = $lastOperation.OldName
+                    $item.FullPath = $lastOperation.OldPath
+                    $item.Status = "Ready to rename"
+                    $item.CanRename = $true
+                    $item.IsSelected = $true
+                    
+                    # Recalculate the proposed new name with current prefix/suffix
+                    $prefix = if ($txtPrefix.Text) { $txtPrefix.Text } else { "" }
+                    $suffix = if ($txtSuffix.Text) { $txtSuffix.Text } else { "" }
+                    
+                    # Extract folder name from old name (remove .rar extension)
+                    $folderName = [System.IO.Path]::GetFileNameWithoutExtension($lastOperation.OldName)
+                    
+                    # Rebuild proposed name (no automatic dash/space)
+                    $proposedName = $folderName
+                    if ($prefix -ne "") {
+                        $proposedName = "$prefix$proposedName"
                     }
+                    if ($suffix -ne "") {
+                        $proposedName = "$proposedName$suffix"
+                    }
+                    $item.NewName = "$proposedName.rar"
                 }
-            }
-            catch {
-                # Log save error, but undo was successful
-            }
-            
-            # Update the item in the results if it exists
-            $item = $script:results | Where-Object { $_.FullPath -eq $lastOperation.NewPath }
-            if ($item) {
-                $item.CurrentName = $lastOperation.OldName
-                $item.FullPath = $lastOperation.OldPath
-                $item.Status = "Ready to rename"
-                $item.CanRename = $true
-                $item.IsSelected = $true
                 
-                # Recalculate the proposed new name with current prefix/suffix
-                $prefix = $txtPrefix.Text.Trim()
-                $suffix = $txtSuffix.Text.Trim()
-                
-                # Extract folder name from old name (remove .rar extension)
-                $folderName = [System.IO.Path]::GetFileNameWithoutExtension($lastOperation.OldName)
-                
-                # Rebuild proposed name
-                $proposedName = $folderName
-                if ($prefix -ne "") {
-                    $proposedName = "$prefix-$proposedName"
-                }
-                if ($suffix -ne "") {
-                    $proposedName = "$proposedName-$suffix"
-                }
-                $item.NewName = "$proposedName.rar"
+                $undoneCount++
             }
-            
-            # Refresh display
-            $dgResults.Items.Refresh()
-            
-            # Re-enable rename button if there are files that can be renamed
-            $canRenameCount = ($script:results | Where-Object { $_.CanRename }).Count
-            if ($canRenameCount -gt 0) {
-                $btnRenameAll.IsEnabled = $true
+            else {
+                $undoErrors++
             }
-            
-            $lblStatus.Content = "Successfully undone 1 operation - $($script:allLogs.Count) operation(s) remaining in log"
-            $lblStatus.Foreground = "#4EC9B0"
-            
-            [System.Windows.MessageBox]::Show("Successfully undone the last rename operation", "Undo Complete", [System.Windows.MessageBoxButton]::OK, [System.Windows.MessageBoxImage]::Information)
+        }
+        catch {
+            $undoErrors++
+        }
+    }
+    
+    # Save updated log
+    try {
+        if ($script:allLogs.Count -gt 0) {
+            $script:allLogs | ConvertTo-Json -Depth 10 | Set-Content -Path $script:logFilePath -Encoding UTF8
         }
         else {
-            [System.Windows.MessageBox]::Show("File not found: $($lastOperation.NewPath)", "Error", [System.Windows.MessageBoxButton]::OK, [System.Windows.MessageBoxImage]::Error)
+            # Delete log file if empty
+            if (Test-Path -Path $script:logFilePath) {
+                Remove-Item -Path $script:logFilePath -Force
+            }
         }
     }
     catch {
-        [System.Windows.MessageBox]::Show("Error undoing operation: $_", "Error", [System.Windows.MessageBoxButton]::OK, [System.Windows.MessageBoxImage]::Error)
+        # Log save error, but undo was successful
+    }
+    
+    # Refresh display
+    $dgResults.Items.Refresh()
+    
+    # Re-enable rename button if there are files that can be renamed
+    $canRenameCount = ($script:results | Where-Object { $_.CanRename }).Count
+    if ($canRenameCount -gt 0) {
+        $btnRenameAll.IsEnabled = $true
+    }
+    
+    # Show results
+    if ($undoneCount -gt 0) {
+        $lblStatus.Content = "Undone: $undoneCount | Errors: $undoErrors | Remaining in log: $($script:allLogs.Count)"
+        $lblStatus.Foreground = if ($undoErrors -eq 0) { "#4EC9B0" } else { "#F48771" }
+        
+        [System.Windows.MessageBox]::Show("Successfully undone $undoneCount operation(s)", "Undo Complete", [System.Windows.MessageBoxButton]::OK, [System.Windows.MessageBoxImage]::Information)
+    }
+    else {
+        $lblStatus.Content = "Undo failed - no files were restored"
+        $lblStatus.Foreground = "#F48771"
+        [System.Windows.MessageBox]::Show("No files were restored. Files may have been moved or renamed manually.", "Undo Failed", [System.Windows.MessageBoxButton]::OK, [System.Windows.MessageBoxImage]::Warning)
     }
 })
 
