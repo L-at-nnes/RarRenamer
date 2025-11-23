@@ -41,25 +41,28 @@ A PowerShell GUI tool to rename RAR archives based on their internal folder stru
 
 ## Requirements
 
-- **Windows 7** or later (tested on Windows 7 & 10)
+- **Windows 7** or later (tested on Windows 7 & 11)
 - **PowerShell 3.0+** (built-in on Windows 7+)
-- **.NET Framework 4.0+** (for WPF DataGrid support)
-  - Windows 10/11: Already installed
-  - Windows 7: Will be automatically installed if missing (via included script)
+- **.NET Framework**:
+  - **.NET 4.0+** for modern UI with DataGrid (Windows 10/11 default)
+  - **.NET 3.5+** for legacy UI mode (Windows 7 default)
+  - **Automatic UI selection**: The script detects your .NET version and chooses the appropriate interface
 - **7-Zip** installed ([Download](https://www.7-zip.org/))
 
 ## Compatibility Notes
 
 ### Windows 7
 
-- Fully compatible with Windows 7 SP1
-- **Automatic .NET Framework installation helper**:
-  - If .NET Framework 4.0+ is not detected, the script will offer to help you install it
-  - Opens your browser to the official Microsoft download page
-  - Provides step-by-step installation instructions
+- **Fully compatible with Windows 7 SP1**
+- **Automatic Legacy Mode**: 
+  - If .NET Framework 3.5 is detected (default on Windows 7), the script automatically uses a simplified interface
+  - Legacy mode uses checkboxes instead of DataGrid for full .NET 3.5 compatibility
+  - All features work identically - only the visual presentation differs
+  - **No installation required** - works out of the box with Windows 7's default .NET Framework
+- **Optional Modern Mode**:
+  - Install .NET Framework 4.5+ to unlock the modern DataGrid interface
+  - Download from [Microsoft](https://www.microsoft.com/en-us/download/details.aspx?id=42643)
   - Requires a system reboot after installation
-  - **Why manual download?**: Windows 7's PowerShell 2.0 has TLS/HTTPS compatibility issues with modern download servers. Using your browser ensures a reliable download.
-  - Alternatively, run `Install-NetFramework.ps1` manually for guided installation
 - PowerShell 3.0+ recommended (update via Windows Management Framework)
 - If you encounter errors, ensure PowerShell execution policy allows scripts:
   ```powershell
@@ -68,8 +71,9 @@ A PowerShell GUI tool to rename RAR archives based on their internal folder stru
 
 ### Windows 10/11
 
-- No additional configuration needed
-- Runs out-of-the-box
+- **No configuration needed** - runs with modern UI mode automatically
+- Uses .NET Framework 4.x (pre-installed)
+- Full DataGrid interface with all features
 
 ## Usage
 
@@ -162,18 +166,16 @@ The `RarRenamer_Log.json` file stores all operations:
 
 ### Windows 7 Issues
 
-**Error: "Type reference cannot find public type named 'DataGrid'"**
-- .NET Framework 4.0+ is required for WPF DataGrid control
-- The script will automatically offer to help you install .NET Framework 4.5.2
-- Click "Yes" when prompted, then:
-  1. Your browser will open to the Microsoft download page
-  2. Click "Download" and save the file (NDP452-KB2901907-x86-x64-AllOS-ENU.exe)
-  3. Run the downloaded installer
-  4. Follow the installation wizard
-  5. **Reboot your computer** when prompted
-  6. Run RarRenamerGUI.ps1 again
-- Or run `Install-NetFramework.ps1` manually for the same guided process
-- Or install manually: [.NET Framework 4.5.2](https://www.microsoft.com/en-us/download/details.aspx?id=42643)
+**Script works but interface looks different**
+- This is normal! The script automatically detects .NET 3.5 and uses legacy mode
+- Legacy mode = checkboxes in a list instead of DataGrid table
+- All features work exactly the same - only visual presentation differs
+- To get the modern DataGrid interface, install .NET Framework 4.5+ (optional)
+
+**Want to upgrade to modern UI?**
+- Install .NET Framework 4.5+ manually: [Download here](https://www.microsoft.com/en-us/download/details.aspx?id=42643)
+- **Reboot required** after installation
+- Script will automatically detect and switch to modern UI mode
 
 **Error: "Join-Path : Cannot bind argument to parameter 'Path'"**
 - Update PowerShell to version 3.0 or later
@@ -199,6 +201,7 @@ The `RarRenamer_Log.json` file stores all operations:
 
 ## Version History
 
+- **v2.2** (2025-11-24): Automatic UI mode detection - legacy mode for .NET 3.5 (Windows 7), modern mode for .NET 4.0+
 - **v2.1** (2025-11-19): Windows 7 compatibility, space preservation in prefix/suffix, bulk undo functionality
 - **v2.0** (2025-11-18): Added checkboxes, logging/rollback, and prefix/suffix system
 - **v1.0**: Initial release with basic rename functionality

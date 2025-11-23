@@ -1,29 +1,25 @@
 # RAR Renamer - GUI Version
 # Dark mode WPF interface for renaming RAR files
 # Features: Filters, Logging with rollback, Custom suffixes
+# Automatic legacy mode for .NET 3.5 (Windows 7)
 
-# Check .NET Framework version (need 4.0+ for DataGrid)
+# Check .NET Framework version and determine UI mode
+$script:useLegacyUI = $false
 try {
     $netVersion = [System.Diagnostics.FileVersionInfo]::GetVersionInfo([System.Runtime.InteropServices.RuntimeEnvironment]::GetRuntimeDirectory() + "mscorlib.dll").ProductVersion
+    
+    # If .NET < 4.0, use legacy UI (no DataGrid)
     if ($netVersion -lt "4.0") {
-        Add-Type -AssemblyName System.Windows.Forms
-        $result = [System.Windows.Forms.MessageBox]::Show(".NET Framework 4.0 or later is required.`n`nCurrent version: $netVersion`n`nDo you want to install .NET Framework 4.5 automatically?`n`n(This will download ~50MB and require a reboot)", "Install .NET Framework 4.5?", [System.Windows.Forms.MessageBoxButtons]::YesNo, [System.Windows.Forms.MessageBoxIcon]::Question)
-        
-        if ($result -eq [System.Windows.Forms.DialogResult]::Yes) {
-            # Launch the installer script
-            $installerScript = Join-Path -Path (Split-Path -Parent $MyInvocation.MyCommand.Path) -ChildPath "Install-NetFramework.ps1"
-            if (Test-Path $installerScript) {
-                Start-Process powershell.exe -ArgumentList "-ExecutionPolicy Bypass -File `"$installerScript`"" -Verb RunAs
-            }
-            else {
-                [System.Windows.Forms.MessageBox]::Show("Installer script not found: Install-NetFramework.ps1`n`nPlease download .NET Framework 4.5 manually from:`nhttps://www.microsoft.com/en-us/download/details.aspx?id=42643", "Error", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error)
-            }
-        }
-        exit 1
+        $script:useLegacyUI = $true
+        Write-Host "Detected .NET Framework $netVersion - using legacy UI mode" -ForegroundColor Yellow
+    }
+    else {
+        Write-Host "Detected .NET Framework $netVersion - using modern UI mode" -ForegroundColor Green
     }
 }
 catch {
-    # If we can't check, try to continue anyway lol
+    # If we can't check, assume modern UI and try to continue
+    Write-Host "Unable to detect .NET version - trying modern UI mode" -ForegroundColor Yellow
 }
 
 Add-Type -AssemblyName PresentationFramework
@@ -80,8 +76,8 @@ else {
     $script:allLogs = @()
 }
 
-# XAML for dark mode GUI
-$xaml = @"
+# XAML for dark mode GUI (Modern with DataGrid - .NET 4.0+)
+$xamlModern = @"
 <Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         Title="RAR Renamer - Enhanced" Height="650" Width="1100"
@@ -227,6 +223,98 @@ $xaml = @"
 </Window>
 "@
 
+# XAML for legacy mode (ListBox - .NET 3.5+)
+$xamlLegacy = @"
+<Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="RAR Renamer - Legacy Mode" Height="650" Width="1100"
+        Background="#1E1E1E" WindowStartupLocation="CenterScreen">
+    <Window.Resources>
+        <Style TargetType="Button">
+            <Setter Property="Background" Value="#007ACC"/>
+            <Setter Property="Foreground" Value="#F1F1F1"/>
+            <Setter Property="BorderThickness" Value="0"/>
+            <Setter Property="Padding" Value="15,8"/>
+            <Setter Property="FontSize" Value="14"/>
+            <Setter Property="Cursor" Value="Hand"/>
+        </Style>
+        <Style TargetType="TextBox">
+            <Setter Property="Background" Value="#2D2D30"/>
+            <Setter Property="Foreground" Value="#F1F1F1"/>
+            <Setter Property="BorderBrush" Value="#3F3F46"/>
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="Padding" Value="8,6"/>
+            <Setter Property="FontSize" Value="13"/>
+        </Style>
+        <Style TargetType="ListBox">
+            <Setter Property="Background" Value="#1E1E1E"/>
+            <Setter Property="Foreground" Value="#F1F1F1"/>
+            <Setter Property="BorderBrush" Value="#3F3F46"/>
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="FontFamily" Value="Consolas"/>
+            <Setter Property="FontSize" Value="12"/>
+        </Style>
+        <Style TargetType="CheckBox">
+            <Setter Property="Foreground" Value="#F1F1F1"/>
+            <Setter Property="FontSize" Value="12"/>
+            <Setter Property="Margin" Value="5,2"/>
+        </Style>
+        <Style TargetType="Label">
+            <Setter Property="Foreground" Value="#F1F1F1"/>
+            <Setter Property="FontSize" Value="13"/>
+        </Style>
+    </Window.Resources>
+    
+    <Grid Margin="20">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+        
+        <!-- Folder selection -->
+        <StackPanel Grid.Row="0" Orientation="Horizontal" Margin="0,0,0,15">
+            <Label Content="Folder:" VerticalAlignment="Center" Margin="0,0,10,0"/>
+            <TextBox x:Name="txtFolder" Width="680" VerticalAlignment="Center" IsReadOnly="True"/>
+            <Button x:Name="btnBrowse" Content="Browse" Margin="10,0,0,0" Width="100"/>
+        </StackPanel>
+        
+        <!-- Prefix/Suffix configuration -->
+        <StackPanel Grid.Row="1" Orientation="Horizontal" Margin="0,0,0,15">
+            <Label Content="Prefix:" VerticalAlignment="Center" Margin="0,0,10,0"/>
+            <TextBox x:Name="txtPrefix" Width="200" VerticalAlignment="Center" />
+            <Label Content="Suffix:" VerticalAlignment="Center" Margin="30,0,10,0"/>
+            <TextBox x:Name="txtSuffix" Width="200" VerticalAlignment="Center" />
+            <Button x:Name="btnApplyPrefixSuffix" Content="Preview" Width="100" Margin="30,0,0,0" IsEnabled="False"/>
+        </StackPanel>
+        
+        <!-- Scan button -->
+        <StackPanel Grid.Row="2" Orientation="Horizontal" Margin="0,0,0,15">
+            <Button x:Name="btnScan" Content="Scan Archives" Width="150" IsEnabled="False"/>
+            <Label x:Name="lblStatus" Content="" Margin="15,0,0,0" Foreground="#4EC9B0"/>
+        </StackPanel>
+        
+        <!-- Results list (legacy ListBox with checkboxes) -->
+        <ScrollViewer Grid.Row="3" VerticalScrollBarVisibility="Auto" Margin="0,0,0,15">
+            <StackPanel x:Name="spResults" Background="#1E1E1E"/>
+        </ScrollViewer>
+        
+        <!-- Action buttons -->
+        <StackPanel Grid.Row="4" Orientation="Horizontal" HorizontalAlignment="Right">
+            <Button x:Name="btnSelectAll" Content="Select All" Width="120" Margin="0,0,10,0"/>
+            <Button x:Name="btnDeselectAll" Content="Deselect All" Width="120" Margin="0,0,10,0"/>
+            <Button x:Name="btnRenameAll" Content="Rename Selected" Width="150" IsEnabled="False"/>
+            <Button x:Name="btnUndo" Content="Undo Last Operation" Width="180" Margin="10,0,0,0" Background="#D17000"/>
+        </StackPanel>
+    </Grid>
+</Window>
+"@
+
+# Choose XAML based on .NET version
+$xaml = if ($script:useLegacyUI) { $xamlLegacy } else { $xamlModern }
+
 # Load XAML (Windows 7 compatible)
 $stringReader = New-Object System.IO.StringReader($xaml)
 $reader = [System.Xml.XmlReader]::Create($stringReader)
@@ -239,7 +327,6 @@ $txtFolder = $window.FindName("txtFolder")
 $btnBrowse = $window.FindName("btnBrowse")
 $btnScan = $window.FindName("btnScan")
 $lblStatus = $window.FindName("lblStatus")
-$dgResults = $window.FindName("dgResults")
 $btnRenameAll = $window.FindName("btnRenameAll")
 $btnUndo = $window.FindName("btnUndo")
 $btnSelectAll = $window.FindName("btnSelectAll")
@@ -250,7 +337,17 @@ $btnApplyPrefixSuffix = $window.FindName("btnApplyPrefixSuffix")
 
 # Data collection
 $script:results = New-Object System.Collections.ObjectModel.ObservableCollection[Object]
-$dgResults.ItemsSource = $script:results
+
+# Initialize results display based on UI mode
+if ($script:useLegacyUI) {
+    # Legacy mode: use StackPanel with checkboxes
+    $spResults = $window.FindName("spResults")
+}
+else {
+    # Modern mode: use DataGrid
+    $dgResults = $window.FindName("dgResults")
+    $dgResults.ItemsSource = $script:results
+}
 
 # Function to save log
 function SaveLog {
@@ -272,6 +369,56 @@ function SaveLog {
     catch {
         [System.Windows.MessageBox]::Show("Error saving log: $_", "Log Error", [System.Windows.MessageBoxButton]::OK, [System.Windows.MessageBoxImage]::Warning)
     }
+}
+
+# Function to refresh legacy UI display
+function RefreshLegacyDisplay {
+    if (-not $script:useLegacyUI) { return }
+    
+    $spResults.Children.Clear()
+    
+    foreach ($item in $script:results) {
+        # Create a checkbox for each item
+        $cb = New-Object System.Windows.Controls.CheckBox
+        $cb.IsChecked = $item.IsSelected
+        $cb.Tag = $item
+        
+        # Format display text
+        $statusColor = switch ($item.Status) {
+            "Ready to rename" { "#4EC9B0" }
+            "Already correct" { "#808080" }
+            "No folder found" { "#F48771" }
+            "Target exists" { "#F48771" }
+            "Renamed" { "#4EC9B0" }
+            default { "#F48771" }
+        }
+        
+        $displayText = "[{0}] {1} → {2} | {3}" -f `
+            $(if ($item.IsSelected) { "X" } else { " " }), `
+            $item.CurrentName.PadRight(40), `
+            $item.NewName.PadRight(40), `
+            $item.Status
+        
+        $cb.Content = $displayText
+        $cb.Foreground = $statusColor
+        $cb.IsEnabled = $item.CanRename
+        
+        # Handle checkbox state changes
+        $cb.Add_Checked({
+            $this.Tag.IsSelected = $true
+        })
+        $cb.Add_Unchecked({
+            $this.Tag.IsSelected = $false
+        })
+        
+        $spResults.Children.Add($cb) | Out-Null
+    }
+}
+
+# Function to refresh modern UI display  
+function RefreshModernDisplay {
+    if ($script:useLegacyUI) { return }
+    $dgResults.Items.Refresh()
 }
 
 # Set default folder on load
@@ -398,6 +545,13 @@ $btnScan.Add_Click({
     $lblStatus.Content = "Found $($rarFiles.Count) RAR file(s) - $readyCount ready to rename"
     $lblStatus.Foreground = "#4EC9B0"
     
+    # Refresh display
+    if ($script:useLegacyUI) {
+        RefreshLegacyDisplay
+    } else {
+        RefreshModernDisplay
+    }
+    
     if ($readyCount -gt 0) {
         $btnRenameAll.IsEnabled = $true
         $btnApplyPrefixSuffix.IsEnabled = $true
@@ -469,7 +623,11 @@ $btnRenameAll.Add_Click({
     SaveLog -logEntries $sessionLog
     
     # Refresh display
-    $dgResults.Items.Refresh()
+    if ($script:useLegacyUI) {
+        RefreshLegacyDisplay
+    } else {
+        RefreshModernDisplay
+    }
     
     $lblStatus.Content = "Renamed: $renamed | Errors: $errors"
     $lblStatus.Foreground = if ($errors -eq 0) { "#4EC9B0" } else { "#F48771" }
@@ -483,7 +641,11 @@ $btnSelectAll.Add_Click({
             $item.IsSelected = $true
         }
     }
-    $dgResults.Items.Refresh()
+    if ($script:useLegacyUI) {
+        RefreshLegacyDisplay
+    } else {
+        RefreshModernDisplay
+    }
 })
 
 # Deselect All button
@@ -491,7 +653,11 @@ $btnDeselectAll.Add_Click({
     foreach ($item in $script:results) {
         $item.IsSelected = $false
     }
-    $dgResults.Items.Refresh()
+    if ($script:useLegacyUI) {
+        RefreshLegacyDisplay
+    } else {
+        RefreshModernDisplay
+    }
 })
 
 # Apply Prefix/Suffix button click
@@ -562,8 +728,12 @@ $btnApplyPrefixSuffix.Add_Click({
         }
     }
     
-    # Refresh the grid
-    $dgResults.Items.Refresh()
+    # Refresh the display
+    if ($script:useLegacyUI) {
+        RefreshLegacyDisplay
+    } else {
+        RefreshModernDisplay
+    }
     
     # Update status and button state
     $readyCount = ($script:results | Where-Object { $_.CanRename }).Count
@@ -594,8 +764,61 @@ $btnUndo.Add_Click({
         return
     }
     
-    # Create undo selection window
-    $undoXaml = @"
+    # Create undo selection window (modern or legacy based on UI mode)
+    if ($script:useLegacyUI) {
+        # Legacy mode: StackPanel with CheckBoxes
+        $undoXaml = @"
+<Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Select Operations to Undo - Legacy Mode" Height="500" Width="800"
+        Background="#1E1E1E" WindowStartupLocation="CenterScreen">
+    <Window.Resources>
+        <Style TargetType="Button">
+            <Setter Property="Background" Value="#007ACC"/>
+            <Setter Property="Foreground" Value="#F1F1F1"/>
+            <Setter Property="BorderThickness" Value="0"/>
+            <Setter Property="Padding" Value="15,8"/>
+            <Setter Property="FontSize" Value="14"/>
+            <Setter Property="Cursor" Value="Hand"/>
+        </Style>
+        <Style TargetType="CheckBox">
+            <Setter Property="Foreground" Value="#F1F1F1"/>
+            <Setter Property="FontFamily" Value="Consolas"/>
+            <Setter Property="FontSize" Value="11"/>
+            <Setter Property="Margin" Value="5,2"/>
+        </Style>
+        <Style TargetType="Label">
+            <Setter Property="Foreground" Value="#F1F1F1"/>
+            <Setter Property="FontSize" Value="13"/>
+        </Style>
+    </Window.Resources>
+    
+    <Grid Margin="20">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+        
+        <Label Grid.Row="0" Content="Select operations to undo (most recent first):" Margin="0,0,0,10"/>
+        
+        <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto" Margin="0,0,0,15">
+            <StackPanel x:Name="spUndoOps" Background="#1E1E1E"/>
+        </ScrollViewer>
+        
+        <StackPanel Grid.Row="2" Orientation="Horizontal" HorizontalAlignment="Right">
+            <Button x:Name="btnUndoSelectAll" Content="Select All" Width="120" Margin="0,0,10,0"/>
+            <Button x:Name="btnUndoDeselectAll" Content="Deselect All" Width="120" Margin="0,0,10,0"/>
+            <Button x:Name="btnUndoSelected" Content="Undo Selected" Width="150" Margin="0,0,10,0"/>
+            <Button x:Name="btnUndoCancel" Content="Cancel" Width="100" Background="#6E6E6E"/>
+        </StackPanel>
+    </Grid>
+</Window>
+"@
+    }
+    else {
+        # Modern mode: DataGrid
+        $undoXaml = @"
 <Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         Title="Select Operations to Undo" Height="500" Width="800"
@@ -708,6 +931,7 @@ $btnUndo.Add_Click({
     </Grid>
 </Window>
 "@
+    }
     
     # Load undo window
     $undoStringReader = New-Object System.IO.StringReader($undoXaml)
@@ -717,13 +941,12 @@ $btnUndo.Add_Click({
     $undoStringReader.Close()
     
     # Get controls
-    $dgUndoOps = $undoWindow.FindName("dgUndoOps")
     $btnUndoSelectAll = $undoWindow.FindName("btnUndoSelectAll")
     $btnUndoDeselectAll = $undoWindow.FindName("btnUndoDeselectAll")
     $btnUndoSelected = $undoWindow.FindName("btnUndoSelected")
     $btnUndoCancel = $undoWindow.FindName("btnUndoCancel")
     
-    # Populate grid with operations (most recent first)
+    # Populate operations list (most recent first)
     $undoCollection = New-Object System.Collections.ObjectModel.ObservableCollection[Object]
     foreach ($log in ($successfulLogs | Sort-Object -Property Timestamp -Descending)) {
         $undoCollection.Add([PSCustomObject]@{
@@ -735,14 +958,52 @@ $btnUndo.Add_Click({
             IsSelected = $true
         })
     }
-    $dgUndoOps.ItemsSource = $undoCollection
+    
+    if ($script:useLegacyUI) {
+        # Legacy mode: populate StackPanel with CheckBoxes
+        $spUndoOps = $undoWindow.FindName("spUndoOps")
+        
+        foreach ($item in $undoCollection) {
+            $cb = New-Object System.Windows.Controls.CheckBox
+            $cb.IsChecked = $true
+            $cb.Tag = $item
+            
+            $displayText = "[{0}] {1} → {2}" -f `
+                $item.Timestamp, `
+                $item.OldName.PadRight(35), `
+                $item.NewName
+            
+            $cb.Content = $displayText
+            $cb.Foreground = "#4EC9B0"
+            
+            $cb.Add_Checked({
+                $this.Tag.IsSelected = $true
+            })
+            $cb.Add_Unchecked({
+                $this.Tag.IsSelected = $false
+            })
+            
+            $spUndoOps.Children.Add($cb) | Out-Null
+        }
+    }
+    else {
+        # Modern mode: bind to DataGrid
+        $dgUndoOps = $undoWindow.FindName("dgUndoOps")
+        $dgUndoOps.ItemsSource = $undoCollection
+    }
     
     # Select All button
     $btnUndoSelectAll.Add_Click({
         foreach ($item in $undoCollection) {
             $item.IsSelected = $true
         }
-        $dgUndoOps.Items.Refresh()
+        if ($script:useLegacyUI) {
+            foreach ($cb in $spUndoOps.Children) {
+                $cb.IsChecked = $true
+            }
+        } else {
+            $dgUndoOps.Items.Refresh()
+        }
     })
     
     # Deselect All button
@@ -750,7 +1011,13 @@ $btnUndo.Add_Click({
         foreach ($item in $undoCollection) {
             $item.IsSelected = $false
         }
-        $dgUndoOps.Items.Refresh()
+        if ($script:useLegacyUI) {
+            foreach ($cb in $spUndoOps.Children) {
+                $cb.IsChecked = $false
+            }
+        } else {
+            $dgUndoOps.Items.Refresh()
+        }
     })
     
     # Cancel button
@@ -841,7 +1108,11 @@ $btnUndo.Add_Click({
         }
         
         # Refresh main display
-        $dgResults.Items.Refresh()
+        if ($script:useLegacyUI) {
+            RefreshLegacyDisplay
+        } else {
+            RefreshModernDisplay
+        }
         
         # Re-enable rename button if there are files that can be renamed
         $canRenameCount = ($script:results | Where-Object { $_.CanRename }).Count
